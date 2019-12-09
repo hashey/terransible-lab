@@ -1,0 +1,34 @@
+{
+	"Resources" : {
+		"terransibleuser": {
+			"Type" : "AWS::IAM::User",
+			"Properties" : {
+				"Policies" : [ {
+					"PolicyName" : "terransible_ec2_fullaccess",
+					"PolicyDocument" : {
+						"Version": "2012-10-17",
+						"Statement" : [ {
+							"Effect" : "Allow",
+							"Action" : [
+								"ec2:*"
+								],
+							"Resource":"*"
+						} ]
+					}
+				} ],
+                "Tags" : [ {
+					"Key" : "Usage",
+					"Value" : "terransible lab"
+				} ],
+				"UserName" : "terransibleuser"
+			}
+		},
+		"terransibleuserkey": {
+			"Type" : "AWS::IAM::AccessKey",
+			"Properties" : {
+			  "UserName" : "terransibleuser"
+			},
+			"DependsOn" : "terransibleuser"
+		}
+	}
+}
