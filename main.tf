@@ -1,4 +1,5 @@
 provider "aws" {
+  version = "1.13.0"
   region  = "${var.aws_region}"
   profile = "${var.aws_profile}"
 }
@@ -384,4 +385,233 @@ resource "aws_db_instance" "wp_db" {
   
   #this causes issues with the snapshot not being allowed to be destroyed by terraform if it is missing a snapshot
   skip_final_snapshot = true
+}
+
+#----- DEV Server -----
+
+#dev server key pair
+resource "aws_key_pair" "wp_auth" {
+  key_name = "${var.key_name}"
+  #path to public key file via a variable
+  public_key = "${file(var.public_key_path)}"
+}
+
+#dev server instance
+resource "aws_instance" "wp_dev" {
+  instance_type = "${var.dev_instance_type}"
+  ami = "${var.dev_ami}"
+  
+  tags {
+    Name = "wp_dev"
+  }
+
+  key_name = "${aws_key_pair.wp_auth.id}"
+  vpc_security_group_ids = ["${aws_security_group.wp_dev_sg.id}"]
+  iam_instance_profile = "${aws_iam_instance_profile.s3_access_profile.id}"
+  subnet_id = "${aws_subnet.wp_public1_subnet.id}"
+
+  #run local command on your system for ansible hosts file
+  #pipes the output of command run to aws_hosts inventory file
+  #passes on the host IP and s3 code bucket to use with its playbooks
+  provisioner "local-exec" {
+    command = <<EOD
+cat <<EOF > aws_hosts
+[dev]
+${aws_instance.wp_dev.public_ip}
+[dev:vars]
+s3code=${aws_s3_bucket.code.bucket}
+domain=${var.domain_name}
+EOF
+EOD
+  }
+  #wait until the instance status polls as it is accessible via ssh
+  #once ready it will run the playbook
+  #avoids the ansible playbook run from failing after terraform is initiatated
+  provisioner "local-exec" {
+    command = "aws ec2 wait instance-status-ok --instance-ids ${aws_instance.wp_dev.id} --profile terransible && ansible-playbook -i aws_hosts wordpress.yml"
+  }
+}
+
+#----- Load Balancer (ELB) -----
+
+resource "aws_elb" "wp_elb" {
+  #appends -eld to the domain name provided
+  name = "${var.domain_name}-elb"
+  #dictate which subnets the ELB will reside in
+  subnets = [
+    "${aws_subnet.wp_public1_subnet.id}",
+    "${aws_subnet.wp_public2_subnet.id}"
+  ]
+  security_groups = [
+    "${aws_security_group.wp_public_sg.id}"
+  ]
+
+  listener {
+    instance_port = 80
+    instance_protocol = "http"
+    lb_port = 80
+    lb_protocol = "http"
+  }
+
+  health_check {
+    healthy_threshold = "${var.elb_healthy_threshold}"
+    unhealthy_threshold = "${var.elb_unhealthy_threshold}"
+    timeout = "${var.elb_timeout}"
+    #use TCP port 80 check rather than HTTP since wordpress doesn't always return a 200 code
+    target = "TCP:80"
+    interval = "${var.elb_interval}"
+  }
+
+  #spread across AZs as evenly as possible
+  cross_zone_load_balancing = true
+  idle_timeout = 400
+  #allow instances to finish receiving traffic before ELB is destroyed
+  connection_draining = true
+  connection_draining_timeout = 400
+
+  tags {
+    Name = "wp_${var.domain_name}-elb"
+  }
+}
+
+#----- Golden Image/AMI -----
+
+#random set of digits for AMI ID to make it unique
+resource "random_id" "golden_ami" {
+  byte_length = 3
+}
+
+resource "aws_ami_from_instance" "wp_golden" {
+  #base64 decode to add more randomness
+  name = "wp_ami-${random_id.golden_ami.b64}"
+  #source the AMI from the dev instance
+  source_instance_id = "${aws_instance.wp_dev.id}"
+
+  #use local command and pipe information to overwrite the userdata file
+  #create a cron job to sync/pull from the s3 bucket created to the /var/www/html/ folder
+  #every new instance receives this cron job to pull down from the code bucket every 5 minutes
+  provisioner "local-exec" {
+    command = <<EOT
+cat <<EOF > userdata
+#!/bin/bash
+/usr/bin/aws s3 sync s3://${aws_s3_bucket.code.bucket} /var/www/html/
+/bin/touch /var/spool/cron/root
+sudo /bin/echo '*/5 * * * * aws s3 sync s3://${aws_s3_bucket.code.bucket} /var/www/html' >> /var/spool/cron/root
+EOF
+EOT
+  }
+}
+
+#----- Launch Configuration for Auto Scaling Group -----
+resource "aws_launch_configuration" "wp_lc" {
+  #the prefix to the auto-generated launch configuration name
+  name_prefix = "wp_lc-"
+  image_id = "${aws_ami_from_instance.wp_golden.id}"
+  instance_type = "${var.lc_instance_type}"
+  security_groups = [
+    "${aws_security_group.wp_private_sg.id}"
+  ]
+  #how the instances will be allowed to access s3
+  iam_instance_profile = "${aws_iam_instance_profile.s3_access_profile.id}"
+  key_name = "${aws_key_pair.wp_auth.id}"
+  #file we create called userdata where the script sources from
+  user_data = "${file("userdata")}"
+
+  lifecycle {
+    #will not destroy the autoscaling group instances until new ones have been introduced to it
+    create_before_destroy = true
+  }
+}
+
+#------ Auto Scaling Group ------
+
+resource "aws_autoscaling_group" "wp_asg" {
+  #name prfixed as 'asg-launch config name'
+  name = "asg-${aws_launch_configuration.wp_lc.id}"
+  max_size = "${var.asg_max}"
+  min_size = "${var.asg_min}"
+  health_check_grace_period = "${var.asg_grace}"
+  health_check_type = "${var.asg_hct}"
+  desired_capacity = "${var.asg_cap}"
+  #allows us to remove the infrastructure via terraform destroy commands
+  force_delete = true
+  load_balancers = [
+    "${aws_elb.wp_elb.id}"
+  ]
+
+  #the zones that the ASG will deploy instances to (our 2 private subnets)
+  vpc_zone_identifier = [
+    "${aws_subnet.wp_private1_subnet.id}",
+    "${aws_subnet.wp_private2_subnet.id}"
+  ]
+
+  launch_configuration = "${aws_launch_configuration.wp_lc.name}"
+  
+  #tag the instances created by the ASG so you can tell what created them (you or automation)
+  tag {
+    key = "Name"
+    value = "wp_asg-instance"
+    propagate_at_launch = true
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+#----- Route 53 -----
+
+#Primary/public zone used for prod
+resource "aws_route53_zone" "primary" {
+  #append the .info to the domain name
+  name = "${var.domain_name}.info"
+  #make sure this is set per earlier in the course
+  delegation_set_id = "${var.delegation_set_id}"
+}
+
+#www record for primary/public zone -- how customers access the site
+resource "aws_route53_record" "www" {
+  zone_id = "${aws_route53_zone.primary.zone_id}"
+  name = "www.${var.domain_name}.info"
+  type = "A"
+
+  #follows the ELB as it updates its IP addressing/DNS
+  alias {
+    name = "${aws_elb.wp_elb.dns_name}"
+    zone_id = "${aws_route53_zone.primary.zone_id}"
+    evaluate_target_health = false
+  }
+}
+
+#DEV instance record for primary/public zone -- allows us to access the dev server
+
+resource "aws_route53_record" "dev" {
+  zone_id = "${aws_route53_zone.primary.zone_id}"
+  name = "dev.${var.domain_name}.info"
+  type = "A"
+  ttl = "300"
+  records = [
+    "${aws_instance.wp_dev.public_ip}"
+  ]
+}
+
+#Private zone
+
+resource "aws_route53_zone" "secondary" {
+  name = "${var.domain_name}.info"
+  vpc_id = "${aws_vpc.wp_vpc.id}"
+}
+
+#DB record for private zone
+
+resource "aws_route53_record" "db" {
+  zone_id = "${aws_route53_zone.secondary.zone_id}"
+  name = "db.${var.domain_name}.info"
+  type = "CNAME"
+  ttl = "300"
+
+  #set the CNAME to the private address of the DB instance private IP address
+  records = [
+    "${aws_db_instance.wp_db.address}"
+  ]
 }
