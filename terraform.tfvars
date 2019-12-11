@@ -15,13 +15,13 @@ cidrs        = {
 localip      = "34.222.180.57/32"
 #change based on what is currently being used in the AWS account
 #do not add .com or anything...
-domain_name  = "cmcloudlab1623"
+domain_name  = "cmcloudlab1744"
 #make sure this is within allowed classes
 db_instance_class = "db.t2.micro"
 dbname = "superherodb"
 dbuser = "superhero"
 #bad password heeeeere
-dbpassword = "asdfasdfasfdasdf"
+dbpassword = "superheropass"
 #make sure this is compatible with LA labs
 dev_instance_type = "t2.micro"
 #look this up in AWS console for us-east-1
@@ -42,4 +42,4 @@ asg_hct = "EC2"
 #desired capacity
 asg_cap = "2"
 #pulled from the results of the route53 command ID field
-delegation_set_id = "N6SMMJ2TAC2PU"
+delegation_set_id = "N2KEP9FNH4G9M8"
