@@ -1,3 +1,6 @@
+# used to provision initial items used to permit terraform/ansible components to create AWS infrastructure components
+# also have been manually adding Administrator role to the account but is no longer required
+
 Resources:
   terransibleuser:
     Type: 'AWS::IAM::User'
@@ -10,6 +13,10 @@ Resources:
               - Effect: Allow
                 Action:
                   - 'ec2:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - '*'
                 Resource: '*'
       Tags:
         - Key: Usage
