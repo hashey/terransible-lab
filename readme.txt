@@ -31,3 +31,5 @@ Could not open a connection to your authentication agent.
 # ssh-agent bash
 # ssh-add /root/.ssh/kryptonite
 Identity added: /root/.ssh/kryptonite (/root/.ssh/kryptonite)
+# ssh-add -l
+2048 SHA256:ZY9y2bttGPCscwg2+fTLpzi9l2GnTIqrBfkQ1FRswAY /root/.ssh/kryptonite (RSA)
