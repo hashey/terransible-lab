@@ -25,3 +25,9 @@ Enter file in which to save the key (/root/.ssh/id_rsa): /root/.ssh/kryptonite
 Enter passphrase (empty for no passphrase):
 Enter same passphrase again:
 Your identification has been saved in /root/.ssh/kryptonite.
+
+# ssh-add -l
+Could not open a connection to your authentication agent.
+# ssh-agent bash
+# ssh-add /root/.ssh/kryptonite
+Identity added: /root/.ssh/kryptonite (/root/.ssh/kryptonite)
