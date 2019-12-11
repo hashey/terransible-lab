@@ -1,0 +1,16 @@
+---
+- hosts: dev
+  become: yes
+  remote_user: ec2-user
+  tasks:
+  # whenever the site is deployed on the dev server
+  # we change the site URL/home to dev.domain.com AFTER the s3 bucket gets synced to
+  # after we make changes to the site
+  - name: Update s3 code bucket # updates from local file system to s3 where ASG instances pull code from
+    command: aws s3 sync /var/www/html s3://{{ s3code }}/ --delete
+  - shell: echo "define('WP_SITEURL','http://dev."{{ domain }}".com');" >> wp-config.php
+    args:
+      chdir: /var/www/html
+  - shell: echo "define('WP_HOME','http://dev."{{ domain }}".com');" >> wp-config.php
+    args:
+      chdir: /var/www/html
